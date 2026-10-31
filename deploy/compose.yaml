@@ -1,0 +1,133 @@
+# Reference deployment: local dump producer + remote delivery worker.
+#
+# Works with `docker compose`, and with stack managers that accept a plain
+# Compose file and an env file (e.g. Arcane, Portainer). No manager-specific
+# features are used. Copy .env.example to .env and edit it first.
+#
+# For local-only operation (no NFS), use compose.local-only.yaml instead.
+#
+# Neither container is privileged, neither mounts the Docker socket, and the
+# database port does not need to be published: the producer joins the
+# database's existing Docker network.
+
+name: ${COMPOSE_PROJECT_NAME:-mysql-backup}
+
+x-common: &common
+  image: ${MYSQL_BACKUP_IMAGE:-ghcr.io/tensegrity-labs/mysql-backup:0.1.0}
+  restart: unless-stopped
+  init: true                      # forwards stop signals; reaps children
+  user: "${BACKUP_UID:-999}:${BACKUP_GID:-999}"
+  read_only: true
+  tmpfs:
+    - /tmp:size=16m,mode=1777     # private option file + heartbeat, never on disk
+    # The base image declares VOLUME /var/lib/mysql; mysqld never runs here, so
+    # a tiny tmpfs stops Docker from creating an anonymous volume per container.
+    - /var/lib/mysql:size=1m,mode=0700
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  stop_grace_period: 60s
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "5" }
+
+x-backup-env: &backup-env
+  BACKUP_ENABLED: ${BACKUP_ENABLED:-true}
+  BACKUP_NAMESPACE: ${BACKUP_NAMESPACE:?set BACKUP_NAMESPACE, e.g. myapp-prod}
+  BACKUP_TZ: ${BACKUP_TZ:-UTC}
+  STAGING_MARKER_ID: ${STAGING_MARKER_ID:-}
+  STAGING_EXPECT_FSTYPE: ${STAGING_EXPECT_FSTYPE:-}
+  STAGING_RESERVE: ${STAGING_RESERVE:-2G}
+  STAGING_RESERVE_PERCENT: ${STAGING_RESERVE_PERCENT:-5}
+  STAGING_MAX_PENDING_COUNT: ${STAGING_MAX_PENDING_COUNT:-0}
+  STAGING_MAX_PENDING_BYTES: ${STAGING_MAX_PENDING_BYTES:-0}
+  LOCAL_KEEP_DELIVERED: ${LOCAL_KEEP_DELIVERED:-24h}
+  LOCAL_KEEP_LATEST: ${LOCAL_KEEP_LATEST:-1}
+  DELIVERY_ENABLED: ${DELIVERY_ENABLED:-true}
+  RETENTION_KEEP_LATEST: ${RETENTION_KEEP_LATEST:-3}
+  RETENTION_HOURLY_DAYS: ${RETENTION_HOURLY_DAYS:-2}
+  RETENTION_DAILY_DAYS: ${RETENTION_DAILY_DAYS:-14}
+  RETENTION_WEEKLY_WEEKS: ${RETENTION_WEEKLY_WEEKS:-8}
+  STATUS_MAX_LOCAL_AGE: ${STATUS_MAX_LOCAL_AGE:-26h}
+  STATUS_MAX_DELIVERED_AGE: ${STATUS_MAX_DELIVERED_AGE:-26h}
+  STATUS_MAX_PENDING_AGE: ${STATUS_MAX_PENDING_AGE:-6h}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+
+services:
+  backup:
+    <<: *common
+    command: ["run"]
+    environment:
+      <<: *backup-env
+      BACKUP_SCHEDULE: ${BACKUP_SCHEDULE:-0 * * * *}
+      BACKUP_ON_START: ${BACKUP_ON_START:-false}
+      MYSQL_HOST: ${MYSQL_HOST:?set MYSQL_HOST (service name on the database network)}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?set MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER:?set MYSQL_USER}
+      # Prefer the secret file below; MYSQL_PASSWORD is supported for managers
+      # without file secrets. Set exactly one of them.
+      MYSQL_PASSWORD_FILE: ${MYSQL_PASSWORD_FILE:-/run/secrets/mysql_password}
+      MYSQL_SSL_MODE: ${MYSQL_SSL_MODE:-PREFERRED}
+      GZIP_LEVEL: ${GZIP_LEVEL:-6}
+      DUMP_SIZE_GROWTH_PERCENT: ${DUMP_SIZE_GROWTH_PERCENT:-150}
+      STAGING_FIRST_DUMP_ESTIMATE: ${STAGING_FIRST_DUMP_ESTIMATE:-1G}
+    secrets:
+      - mysql_password
+    volumes:
+      - type: bind
+        source: ${STAGING_HOST_PATH:?set STAGING_HOST_PATH to the mounted staging filesystem}
+        target: /staging
+        bind:
+          create_host_path: false # never create a stand-in directory on root
+    networks: [db]
+    healthcheck:
+      test: ["CMD", "mysql-backup", "healthcheck", "producer"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 120s
+
+  backup-delivery:
+    <<: *common
+    command: ["deliver-loop"]
+    environment:
+      <<: *backup-env
+      DELIVERY_MARKER_ID: ${DELIVERY_MARKER_ID:-}
+      DELIVERY_EXPECT_FSTYPE: ${DELIVERY_EXPECT_FSTYPE:-}
+      DELIVERY_EXPECT_SOURCE: ${DELIVERY_EXPECT_SOURCE:-}
+      DELIVERY_POLL_INTERVAL: ${DELIVERY_POLL_INTERVAL:-60s}
+      DELIVERY_RETRY_INTERVAL: ${DELIVERY_RETRY_INTERVAL:-5m}
+      DELIVERY_ATTEMPT_TIMEOUT: ${DELIVERY_ATTEMPT_TIMEOUT:-2h}
+      DELIVERY_VERIFY_READ: ${DELIVERY_VERIFY_READ:-auto}
+      REMOTE_RETENTION_ENABLED: ${REMOTE_RETENTION_ENABLED:-true}
+    volumes:
+      - type: bind
+        source: ${STAGING_HOST_PATH:?set STAGING_HOST_PATH}
+        target: /staging
+        bind:
+          create_host_path: false
+      # The HOST mounts the NFS export (see docs/host-preparation.md). rslave
+      # propagation lets a mount that appears after this container started
+      # (e.g. NFS was down at boot) become visible without a restart.
+      - type: bind
+        source: ${DELIVERY_HOST_PATH:?set DELIVERY_HOST_PATH to the host NFS mount point}
+        target: /destination
+        bind:
+          create_host_path: false
+          propagation: ${DELIVERY_BIND_PROPAGATION:-rslave}
+    network_mode: none            # needs no network: the host handles NFS
+    healthcheck:
+      test: ["CMD", "mysql-backup", "healthcheck", "delivery"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 120s
+
+networks:
+  db:
+    external: true
+    name: ${MYSQL_NETWORK:?set MYSQL_NETWORK to the existing database network}
+
+secrets:
+  mysql_password:
+    file: ${MYSQL_PASSWORD_HOST_FILE:-./secrets/mysql_password}

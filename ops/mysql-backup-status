@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Host-side monitoring check (Nagios/Icinga/Zabbix style).
+# Usage: mysql-backup-status <compose-project-dir> [service]
+# Prints one line and exits 0 OK, 1 WARNING, 2 CRITICAL, 3 UNKNOWN.
+set -uo pipefail
+dir=${1:?usage: mysql-backup-status <compose-project-dir> [service]}
+svc=${2:-backup}
+out=$(cd "$dir" && timeout 60 docker compose exec -T "$svc" mysql-backup status --json 2>/dev/null)
+rc=$?
+if [[ -z $out ]]; then
+	echo "UNKNOWN - cannot query mysql-backup in $dir (service $svc, exit $rc)"; exit 3
+fi
+state=$(sed -n 's/.*"state":"\([A-Z]*\)".*/\1/p' <<<"$out")
+ns=$(sed -n 's/.*"namespace":"\([^"]*\)".*/\1/p' <<<"$out")
+problems=$(sed -n 's/.*"problems":\[\(.*\)\],"local".*/\1/p; s/.*"problems":\[\(.*\)\]}$/\1/p' <<<"$out" | head -n1)
+pending=$(sed -n 's/.*"pending_count":\([0-9]*\).*/\1/p' <<<"$out")
+age=$(sed -n 's/.*"latest_age_seconds":\([0-9]*\).*/\1/p' <<<"$out")
+echo "$state - $ns latest_local_age=${age:-?}s pending=${pending:-n/a} ${problems:+problems=$problems}"
+case $state in OK|DISABLED) exit 0 ;; WARNING) exit 1 ;; CRITICAL) exit 2 ;; *) exit 3 ;; esac

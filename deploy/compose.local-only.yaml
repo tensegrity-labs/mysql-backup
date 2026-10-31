@@ -1,0 +1,73 @@
+# Reference deployment without remote delivery: local staging is the only
+# store and LOCAL_RETENTION_* tiers (default: the RETENTION_* values) apply.
+# Uses the same .env as compose.yaml; DELIVERY_* settings are ignored.
+
+name: ${COMPOSE_PROJECT_NAME:-mysql-backup}
+
+services:
+  backup:
+    image: ${MYSQL_BACKUP_IMAGE:-ghcr.io/tensegrity-labs/mysql-backup:0.1.0}
+    command: ["run"]
+    restart: unless-stopped
+    init: true
+    user: "${BACKUP_UID:-999}:${BACKUP_GID:-999}"
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+      - /var/lib/mysql:size=1m,mode=0700   # avoid an anonymous volume from the base image
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    stop_grace_period: 60s
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+    environment:
+      BACKUP_ENABLED: ${BACKUP_ENABLED:-true}
+      BACKUP_NAMESPACE: ${BACKUP_NAMESPACE:?set BACKUP_NAMESPACE, e.g. myapp-prod}
+      BACKUP_TZ: ${BACKUP_TZ:-UTC}
+      BACKUP_SCHEDULE: ${BACKUP_SCHEDULE:-0 * * * *}
+      BACKUP_ON_START: ${BACKUP_ON_START:-false}
+      MYSQL_HOST: ${MYSQL_HOST:?set MYSQL_HOST}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?set MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER:?set MYSQL_USER}
+      MYSQL_PASSWORD_FILE: ${MYSQL_PASSWORD_FILE:-/run/secrets/mysql_password}
+      MYSQL_SSL_MODE: ${MYSQL_SSL_MODE:-PREFERRED}
+      GZIP_LEVEL: ${GZIP_LEVEL:-6}
+      STAGING_MARKER_ID: ${STAGING_MARKER_ID:-}
+      STAGING_EXPECT_FSTYPE: ${STAGING_EXPECT_FSTYPE:-}
+      STAGING_RESERVE: ${STAGING_RESERVE:-2G}
+      STAGING_RESERVE_PERCENT: ${STAGING_RESERVE_PERCENT:-5}
+      STAGING_FIRST_DUMP_ESTIMATE: ${STAGING_FIRST_DUMP_ESTIMATE:-1G}
+      DUMP_SIZE_GROWTH_PERCENT: ${DUMP_SIZE_GROWTH_PERCENT:-150}
+      DELIVERY_ENABLED: "false"
+      LOCAL_RETENTION_KEEP_LATEST: ${LOCAL_RETENTION_KEEP_LATEST:-${RETENTION_KEEP_LATEST:-3}}
+      LOCAL_RETENTION_HOURLY_DAYS: ${LOCAL_RETENTION_HOURLY_DAYS:-${RETENTION_HOURLY_DAYS:-2}}
+      LOCAL_RETENTION_DAILY_DAYS: ${LOCAL_RETENTION_DAILY_DAYS:-${RETENTION_DAILY_DAYS:-14}}
+      LOCAL_RETENTION_WEEKLY_WEEKS: ${LOCAL_RETENTION_WEEKLY_WEEKS:-${RETENTION_WEEKLY_WEEKS:-8}}
+      STATUS_MAX_LOCAL_AGE: ${STATUS_MAX_LOCAL_AGE:-26h}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    secrets:
+      - mysql_password
+    volumes:
+      - type: bind
+        source: ${STAGING_HOST_PATH:?set STAGING_HOST_PATH}
+        target: /staging
+        bind:
+          create_host_path: false
+    networks: [db]
+    healthcheck:
+      test: ["CMD", "mysql-backup", "healthcheck", "producer"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 120s
+
+networks:
+  db:
+    external: true
+    name: ${MYSQL_NETWORK:?set MYSQL_NETWORK}
+
+secrets:
+  mysql_password:
+    file: ${MYSQL_PASSWORD_HOST_FILE:-./secrets/mysql_password}

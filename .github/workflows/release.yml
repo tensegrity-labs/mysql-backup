@@ -1,0 +1,188 @@
+name: release
+
+# Publishes ONLY from a version tag (vX.Y.Z) that points at a commit on the
+# repository's default branch.
+# The image is built once, pushed by digest (no tag), tested on both
+# architectures by that digest, and only then tagged. Tags are never moved to
+# different content, and the optional Docker Hub mirror receives a copy of the
+# same digest (no rebuild).
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      mysql: ${{ steps.v.outputs.mysql }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0, persist-credentials: false }
+      - id: v
+        name: validate tag, VERSION file and branch
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          [[ "$(cat runtime/VERSION)" == "$version" ]] || { echo "runtime/VERSION != tag"; exit 1; }
+          default="${{ github.event.repository.default_branch }}"
+          git merge-base --is-ancestor "$GITHUB_SHA" "origin/$default" || { echo "tag is not on $default"; exit 1; }
+          mysql=$(sed -n 's/^ARG MYSQL_CLIENT_VERSION=//p' Dockerfile)
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "mysql=$mysql" >>"$GITHUB_OUTPUT"
+      - name: refuse to overwrite an existing release tag
+        run: |
+          if docker buildx imagetools inspect "$IMAGE:${{ steps.v.outputs.version }}" >/dev/null 2>&1; then
+            echo "$IMAGE:${{ steps.v.outputs.version }} already exists; versioned releases are immutable"; exit 1
+          fi
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ needs.prepare.outputs.version }}
+            REVISION=${{ github.sha }}
+            CREATED=${{ github.event.head_commit.timestamp }}
+          labels: |
+            org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          annotations: |
+            index:org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            index:org.opencontainers.image.licenses=MIT AND GPL-2.0-only WITH Universal-FOSS-exception-1.0
+            index:org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
+            index:org.opencontainers.image.revision=${{ github.sha }}
+            index:org.opencontainers.image.description=Scheduled Oracle MySQL logical dumps with local staging, tiered retention and optional verified NFS delivery
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          provenance: mode=max
+          sbom: true
+
+  test:
+    needs: [prepare, build]
+    name: test release candidate (${{ matrix.arch }})
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: pull candidate by digest
+        run: |
+          docker pull "$IMAGE@${{ needs.build.outputs.digest }}"
+          docker run --rm "$IMAGE@${{ needs.build.outputs.digest }}" version | tee /dev/stderr |
+            grep -q "mysql-backup ${{ needs.prepare.outputs.version }} (mysqldump Ver ${{ needs.prepare.outputs.mysql }})"
+      - run: IMAGE="$IMAGE@${{ needs.build.outputs.digest }}" tests/run-unit.sh
+      - run: IMAGE="$IMAGE@${{ needs.build.outputs.digest }}" tests/integration/restore.sh
+      - run: IMAGE="$IMAGE@${{ needs.build.outputs.digest }}" tests/integration/compose.sh
+      - name: real NFS
+        if: matrix.arch == 'amd64'
+        timeout-minutes: 20
+        run: sudo --preserve-env=CI env MBTEST_ALLOW_HOST_NFS=1 IMAGE="$IMAGE@${{ needs.build.outputs.digest }}" tests/integration/nfs.sh
+
+  publish:
+    needs: [prepare, build, test]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write        # GitHub release
+      packages: write        # tag the tested digest
+      id-token: write        # build provenance attestation
+      attestations: write
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: tag the tested digest (no rebuild)
+        id: tags
+        run: |
+          set -euo pipefail
+          v=${{ needs.prepare.outputs.version }}; d=${{ needs.build.outputs.digest }}
+          minor=${v%.*}; major=${v%%.*}
+          if docker buildx imagetools inspect "$IMAGE:$v" >/dev/null 2>&1; then
+            echo "$IMAGE:$v appeared meanwhile; refusing to move it"; exit 1
+          fi
+          tags=(-t "$IMAGE:$v" -t "$IMAGE:$v-mysql${{ needs.prepare.outputs.mysql }}" -t "$IMAGE:$minor" -t "$IMAGE:latest")
+          [[ $major != 0 ]] && tags+=(-t "$IMAGE:$major")
+          docker buildx imagetools create "${tags[@]}" "$IMAGE@$d"
+          docker buildx imagetools inspect "$IMAGE:$v"
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ needs.build.outputs.digest }}
+          push-to-registry: true
+      - name: optional Docker Hub mirror (same digest)
+        env:
+          DH_REPO: ${{ vars.DOCKERHUB_REPOSITORY }}
+          DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$DH_REPO" || -z "$DH_USER" || -z "$DH_TOKEN" ]]; then
+            echo "Docker Hub mirror not configured; skipping (GHCR is canonical)."; exit 0
+          fi
+          echo "$DH_TOKEN" | docker login docker.io -u "$DH_USER" --password-stdin
+          v=${{ needs.prepare.outputs.version }}
+          if docker buildx imagetools inspect "docker.io/$DH_REPO:$v" >/dev/null 2>&1; then
+            echo "docker.io/$DH_REPO:$v exists; not overwriting"; exit 1
+          fi
+          docker buildx imagetools create -t "docker.io/$DH_REPO:$v" -t "docker.io/$DH_REPO:${v%.*}" \
+            -t "docker.io/$DH_REPO:latest" "$IMAGE@${{ needs.build.outputs.digest }}"
+      - name: GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          v=${{ needs.prepare.outputs.version }}; d=${{ needs.build.outputs.digest }}
+          cat > notes.md <<NOTES
+          Container image (tested on linux/amd64 and linux/arm64 before tagging):
+
+              $IMAGE:$v
+              $IMAGE@$d
+
+          MySQL client: Oracle mysqldump ${{ needs.prepare.outputs.mysql }} (see docs/compatibility.md).
+          Pin by digest in production; see docs/upgrade.md. Changes: see CHANGELOG.md.
+          NOTES
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag

@@ -1,0 +1,304 @@
+#!/usr/bin/env bash
+# mysql-backup - Oracle MySQL logical dumps with local staging and optional
+# verified delivery. See README.md and docs/ for the full reference.
+set -o nounset -o pipefail
+shopt -s nullglob
+
+MB_BIN=$(readlink -f -- "${BASH_SOURCE[0]}")
+MB_ROOT=${MB_ROOT:-$(cd -- "$(dirname -- "$MB_BIN")/.." && pwd)}
+
+# shellcheck source=../lib/common.sh
+. "$MB_ROOT/lib/common.sh"
+. "$MB_ROOT/lib/mounts.sh"
+. "$MB_ROOT/lib/cron.sh"
+. "$MB_ROOT/lib/retention.sh"
+. "$MB_ROOT/lib/localstore.sh"
+. "$MB_ROOT/lib/status.sh"
+. "$MB_ROOT/lib/producer.sh"
+. "$MB_ROOT/lib/delivery.sh"
+
+usage() {
+	cat <<'EOF'
+Usage: mysql-backup <command> [options]
+
+Long-running workers (used as container commands):
+  run                 producer: scheduled local dumps (never touches the destination)
+  deliver-loop        delivery worker: retries pending deliveries automatically
+
+One-shot operations (e.g. `docker compose exec backup mysql-backup dump`):
+  dump                take one dump now (same locking and safeguards as scheduled runs)
+  deliver             run one delivery pass now
+  retention-preview   [--local|--remote] show what retention would keep/delete; deletes nothing
+  status              [--json|--prometheus] [--scope all|producer|delivery]
+  healthcheck         container healthcheck (worker heartbeat + critical status)
+  init-staging        write the staging marker after you verified the mount
+  init-destination    write the destination marker after you verified the mount
+  check-config        validate configuration and print the effective settings (no secrets)
+  version
+
+Exit codes: 0 ok, 1 failure, 2 configuration, 3 disabled, 4 capacity/queue full,
+5 busy (another run holds the lock), 6 staging/destination unavailable,
+7 destination conflict, 8 interrupted. status: 0 OK, 1 WARNING, 2 CRITICAL, 3 UNKNOWN.
+EOF
+}
+
+# ------------------------------------------------------------- producer loop
+_loop_child=""
+_loop_stop=0
+_loop_on_signal() {
+	_loop_stop=1
+	[[ -n $_loop_child ]] && kill -TERM "$_loop_child" 2>/dev/null
+	[[ -n ${_sleep_pid:-} ]] && kill "$_sleep_pid" 2>/dev/null
+	return 0
+}
+
+# interruptible sleep (signals are handled immediately)
+_isleep() {
+	sleep "$1" & _sleep_pid=$!
+	wait "$_sleep_pid" 2>/dev/null
+	_sleep_pid=""
+}
+
+_run_child() { # run a one-shot command as a child we can forward signals to
+	"$MB_BIN" "$@" &
+	_loop_child=$!
+	local rc
+	while :; do
+		wait "$_loop_child"; rc=$?
+		kill -0 "$_loop_child" 2>/dev/null || break
+	done
+	_loop_child=""
+	return "$rc"
+}
+
+_idle_disabled() {
+	log_info "BACKUP_ENABLED=false: worker is idle; no dumps, deliveries or pruning will run"
+	while ((!_loop_stop)); do heartbeat; _isleep 30; done
+	exit 0
+}
+
+cmd_run() {
+	MB_ROLE=producer
+	trap _loop_on_signal TERM INT HUP
+	heartbeat
+	[[ $BACKUP_ENABLED == true ]] || _idle_disabled
+	producer_check_db_config
+	cron_validate "$BACKUP_SCHEDULE" || die "$EX_CONFIG" "BACKUP_SCHEDULE is not a valid 5-field cron expression: '$BACKUP_SCHEDULE'"
+	log_info "producer started: version=$MB_VERSION schedule='$BACKUP_SCHEDULE' tz=$BACKUP_TZ staging=$STAGING_DIR delivery=$DELIVERY_ENABLED"
+	if [[ $BACKUP_ON_START == true ]]; then
+		_run_child dump
+	fi
+	local last_key="" now minute key
+	while ((!_loop_stop)); do
+		heartbeat
+		now=$(now_epoch)
+		_isleep $((60 - now % 60))
+		((_loop_stop)) && break
+		minute=$(( $(now_epoch) / 60 * 60 ))
+		# Deduplicate by local wall-clock minute: a repeated hour at the end of
+		# DST runs once.
+		key=$(TZ=$BACKUP_TZ date -d "@$minute" '+%F %H:%M')
+		[[ $key == "$last_key" ]] && continue
+		if cron_matches "$BACKUP_SCHEDULE" "$minute" "$BACKUP_TZ"; then
+			last_key=$key
+			local t0=$minute
+			_run_child dump
+			# Report scheduled minutes that elapsed while this dump ran.
+			local m skipped=0
+			for ((m = t0 + 60; m <= $(now_epoch) - 60; m += 60)); do
+				cron_matches "$BACKUP_SCHEDULE" "$m" "$BACKUP_TZ" && skipped=$((skipped + 1))
+			done
+			((skipped > 0)) && log_warn "$skipped scheduled run(s) were skipped because the previous dump was still running"
+		fi
+		[[ -n $STATUS_TEXTFILE ]] && write_textfile
+	done
+	log_info "producer stopping"
+	exit 0
+}
+
+# ------------------------------------------------------------- delivery loop
+# The supervisor itself never touches the destination. Each pass runs in a
+# child process group with a deadline. A child blocked in uninterruptible NFS
+# I/O may survive SIGKILL; the supervisor then reports "stalled" and does not
+# start another pass until that child is gone, so blocked processes cannot
+# accumulate.
+cmd_deliver_loop() {
+	MB_ROLE=delivery
+	trap _loop_on_signal TERM INT HUP
+	heartbeat
+	[[ $BACKUP_ENABLED == true ]] || _idle_disabled
+	if [[ $DELIVERY_ENABLED != true ]]; then
+		log_info "DELIVERY_ENABLED=false: delivery worker is idle"
+		while ((!_loop_stop)); do heartbeat; _isleep 30; done
+		exit 0
+	fi
+	log_info "delivery worker started: version=$MB_VERSION destination=$DELIVERY_DIR poll=${DELIVERY_POLL_INTERVAL}s retry=${DELIVERY_RETRY_INTERVAL}s timeout=${DELIVERY_ATTEMPT_TIMEOUT}s"
+	local lsf="$MB_STATUS_DIR/delivery-loop.state"
+	local pid="" started=0 stalled="" last_fail=0 rc killed_at=0 why
+	while ((!_loop_stop)); do
+		heartbeat
+		if ! why=$(validate_staging); then
+			log_error "staging check failed: $why"
+			_isleep "$DELIVERY_POLL_INTERVAL"; continue
+		fi
+		ensure_state_dirs
+		local now; now=$(now_epoch)
+		if [[ -n $pid ]]; then
+			if kill -0 "$pid" 2>/dev/null; then
+				if ((now - started > DELIVERY_ATTEMPT_TIMEOUT)); then
+					if ((killed_at == 0)); then
+						log_error "delivery pass exceeded ${DELIVERY_ATTEMPT_TIMEOUT}s; terminating it"
+						kill -TERM -- "-$pid" 2>/dev/null; killed_at=$now
+					elif ((now - killed_at > 30)); then
+						kill -KILL -- "-$pid" 2>/dev/null
+						if [[ -z $stalled ]]; then
+							stalled=$now
+							log_error "delivery pass does not exit after SIGKILL (blocked in uninterruptible I/O?); no new pass will start until it is gone"
+							state_write "$lsf" "attempt_started=$started" "stalled_since=$stalled"
+							[[ -n $STATUS_TEXTFILE ]] && write_textfile
+						fi
+					fi
+				fi
+				_isleep 5; continue
+			fi
+			wait "$pid" 2>/dev/null; rc=$?
+			((rc != 0 && rc != EX_BUSY)) && last_fail=$now
+			((killed_at != 0)) && { last_fail=$now; delivery_record failed "$EX_FAIL" "delivery pass timed out and was terminated"; }
+			[[ -n $stalled ]] && log_info "previously stalled delivery pass has exited"
+			pid=""; stalled=""; killed_at=0
+			state_write "$lsf"
+			[[ -n $STATUS_TEXTFILE ]] && write_textfile
+			continue
+		fi
+		local count bytes oldest
+		read -r count bytes oldest < <(pending_summary)
+		if ((count > 0)) && ((now - last_fail >= DELIVERY_RETRY_INTERVAL)); then
+			set -m
+			"$MB_BIN" deliver &
+			pid=$!
+			set +m
+			started=$now
+			state_write "$lsf" "attempt_started=$started"
+			continue
+		fi
+		[[ -n $STATUS_TEXTFILE ]] && write_textfile
+		_isleep "$DELIVERY_POLL_INTERVAL"
+	done
+	if [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null; then
+		log_info "stopping: waiting for the running delivery pass to stop"
+		kill -TERM -- "-$pid" 2>/dev/null
+		local i; for ((i = 0; i < 20; i++)); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+	fi
+	log_info "delivery worker stopping"
+	exit 0
+}
+
+# ----------------------------------------------------------------- commands
+cmd_retention_preview() {
+	local which=${1:---local}
+	[[ $BACKUP_ENABLED == true ]] || { log_info "BACKUP_ENABLED=false"; return "$EX_DISABLED"; }
+	case $which in
+		--local)
+			echo "# local staging policy ($([[ $DELIVERY_ENABLED == true ]] &&
+				echo "delivery enabled: keep undelivered, delivered for $(human_age "$LOCAL_KEEP_DELIVERED"), newest $LOCAL_KEEP_LATEST" ||
+				echo "local-only: $(retention_policy_text "$LOCAL_RETENTION_KEEP_LATEST" "$LOCAL_RETENTION_HOURLY_DAYS" "$LOCAL_RETENTION_DAILY_DAYS" "$LOCAL_RETENTION_WEEKLY_WEEKS")"))"
+			ensure_state_dirs 2>/dev/null
+			local_prune preview ;;
+		--remote)
+			[[ $DELIVERY_ENABLED == true ]] || die "$EX_CONFIG" "delivery is disabled"
+			local why
+			why=$(validate_destination) || die "$EX_UNAVAILABLE" "destination unavailable: $why"
+			echo "# remote policy: $(retention_policy_text "$RETENTION_KEEP_LATEST" "$RETENTION_HOURLY_DAYS" "$RETENTION_DAILY_DAYS" "$RETENTION_WEEKLY_WEEKS")"
+			remote_retention preview ;;
+		*) die "$EX_CONFIG" "retention-preview: use --local or --remote" ;;
+	esac
+}
+
+cmd_status() {
+	local fmt=text scope=all
+	while (($#)); do
+		case $1 in
+			--json) fmt=json ;;
+			--prometheus) fmt=prometheus ;;
+			--scope) scope=${2:-all}; shift ;;
+			*) die "$EX_CONFIG" "status: unknown option $1" ;;
+		esac
+		shift
+	done
+	collect_status "$scope"
+	case $fmt in
+		json) print_status_json ;;
+		prometheus) print_status_prometheus ;;
+		*) print_status_text ;;
+	esac
+	[[ $ST_STATE == DISABLED ]] && return 0
+	return "$ST_LEVEL"
+}
+
+cmd_healthcheck() {
+	local hb="${MB_HEARTBEAT_FILE:-/tmp/mysql-backup.heartbeat}" t
+	t=$(cat "$hb" 2>/dev/null) || { echo "no worker heartbeat"; return 1; }
+	(($(now_epoch) - t < 180)) || { echo "worker heartbeat is stale"; return 1; }
+	[[ $BACKUP_ENABLED == true ]] || { echo "disabled"; return 0; }
+	local scope=${1:-producer}
+	collect_status "$scope"
+	if ((ST_LEVEL >= 2)); then printf '%s\n' "${ST_PROBLEMS[@]}"; return 1; fi
+	echo "$ST_STATE"
+}
+
+cmd_init_marker() { # init-staging | init-destination
+	local kind=$1 dir name id
+	if [[ $kind == staging ]]; then dir=$STAGING_DIR; name=$STAGING_MARKER_NAME; id=$STAGING_MARKER_ID
+	else dir=$DELIVERY_DIR; name=$DELIVERY_MARKER_NAME; id=$DELIVERY_MARKER_ID; fi
+	[[ -d $dir ]] || die "$EX_UNAVAILABLE" "$dir does not exist"
+	if [[ -e $dir/$name ]]; then log_info "$dir/$name already exists; unchanged"; return 0; fi
+	log_warn "writing $dir/$name - only do this after verifying on the HOST that the intended filesystem is mounted there"
+	printf '%s\n' "${id:-mysql-backup $kind marker}" >"$dir/$name" || die "$EX_FAIL" "cannot write marker"
+}
+
+cmd_check_config() {
+	cat <<EOF
+version=$MB_VERSION
+BACKUP_ENABLED=$BACKUP_ENABLED
+BACKUP_NAMESPACE=$BACKUP_NAMESPACE
+BACKUP_TZ=$BACKUP_TZ
+BACKUP_SCHEDULE=$BACKUP_SCHEDULE
+BACKUP_ON_START=$BACKUP_ON_START
+MYSQL_HOST=${MYSQL_HOST:-}
+MYSQL_PORT=${MYSQL_PORT:-3306}
+MYSQL_DATABASE=${MYSQL_DATABASE:-}
+MYSQL_USER=$([[ -n ${MYSQL_USER:-}${MYSQL_USER_FILE:-} ]] && echo '(set)' || echo '(missing)')
+MYSQL_PASSWORD=$([[ -n ${MYSQL_PASSWORD:-}${MYSQL_PASSWORD_FILE:-} ]] && echo '(set)' || echo '(missing)')
+STAGING_DIR=$STAGING_DIR reserve=$(human_bytes "$STAGING_RESERVE")/${STAGING_RESERVE_PERCENT}% max_pending=${STAGING_MAX_PENDING_COUNT}/$(human_bytes "$STAGING_MAX_PENDING_BYTES")
+LOCAL_KEEP_DELIVERED=$(human_age "$LOCAL_KEEP_DELIVERED") LOCAL_KEEP_LATEST=$LOCAL_KEEP_LATEST
+DELIVERY_ENABLED=$DELIVERY_ENABLED DELIVERY_DIR=$DELIVERY_DIR
+remote retention: $(retention_policy_text "$RETENTION_KEEP_LATEST" "$RETENTION_HOURLY_DAYS" "$RETENTION_DAILY_DAYS" "$RETENTION_WEEKLY_WEEKS")
+local-only retention: $(retention_policy_text "$LOCAL_RETENTION_KEEP_LATEST" "$LOCAL_RETENTION_HOURLY_DAYS" "$LOCAL_RETENTION_DAILY_DAYS" "$LOCAL_RETENTION_WEEKLY_WEEKS")
+EOF
+	cron_validate "$BACKUP_SCHEDULE" || die "$EX_CONFIG" "BACKUP_SCHEDULE is invalid"
+}
+
+main() {
+	local cmd=${1:-}
+	shift || true
+	case $cmd in
+		''|-h|--help|help) usage; exit 0 ;;
+		version|--version) echo "mysql-backup $MB_VERSION ($(mysqldump --version 2>/dev/null | awk '{print $1, $2, $3}'))"; exit 0 ;;
+	esac
+	load_config
+	case $cmd in
+		run) cmd_run ;;
+		deliver-loop) cmd_deliver_loop ;;
+		dump) MB_ROLE=${MB_ROLE:-producer}; do_dump; exit $? ;;
+		deliver) MB_ROLE=${MB_ROLE:-delivery}; do_deliver; exit $? ;;
+		retention-preview) cmd_retention_preview "$@"; exit $? ;;
+		status) cmd_status "$@"; exit $? ;;
+		healthcheck) cmd_healthcheck "$@"; exit $? ;;
+		init-staging) cmd_init_marker staging ;;
+		init-destination) cmd_init_marker destination ;;
+		check-config) cmd_check_config ;;
+		*) usage >&2; exit "$EX_CONFIG" ;;
+	esac
+}
+
+main "$@"

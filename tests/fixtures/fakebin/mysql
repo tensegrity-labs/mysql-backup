@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Test double for the mysql client (unit tests only).
+[[ ${1:-} == --version ]] && { echo "mysql  Ver 8.0.37 (fake)"; exit 0; }
+[[ -n ${FAKE_ARGV_LOG:-} ]] && printf '%s\n' "$*" >>"$FAKE_ARGV_LOG"
+[[ ${FAKE_CONNECT:-ok} == fail ]] && { echo "ERROR 2005 (HY000): Unknown MySQL server host 'nowhere' (-2)" >&2; exit 1; }
+echo "${FAKE_SERVER_VERSION:-8.0.37}"

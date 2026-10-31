@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Test double: passes through to the real cp unless FAKE_CP_BLOCK=1, in which
+# case it simulates a transfer that hangs (used to exercise the delivery
+# supervisor's deadline handling; this is NOT a real NFS outage).
+if [[ ${FAKE_CP_BLOCK:-0} == 1 ]]; then
+	[[ -n ${FAKE_PID_FILE:-} ]] && echo $$ >>"$FAKE_PID_FILE"
+	sleep 3600
+fi
+exec /usr/bin/cp "$@"

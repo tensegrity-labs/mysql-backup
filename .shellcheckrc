@@ -1,0 +1,3 @@
+# Libraries share variables across sourced files; SC2034 is noise here.
+disable=SC2034,SC2155
+external-sources=true

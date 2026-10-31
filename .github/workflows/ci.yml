@@ -1,0 +1,62 @@
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+    tags-ignore: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege: CI only reads the repository. It never logs in to a
+# registry and never publishes anything, including for pull requests from
+# forks (which run with a read-only token and no secrets).
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - run: pip install --quiet shellcheck-py==0.11.0.1
+      - run: tests/static.sh
+
+  container:
+    name: container + restore (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - name: build image
+        run: docker build --build-arg VERSION=0.0.0-ci -t mysql-backup:ci .
+      - name: unit and component tests (inside the image)
+        run: IMAGE=mysql-backup:ci tests/run-unit.sh
+      - name: restore test (real MySQL 8.0.37)
+        run: IMAGE=mysql-backup:ci tests/integration/restore.sh
+      - name: reference compose deployment test
+        run: IMAGE=mysql-backup:ci tests/integration/compose.sh
+      - name: evidence - MariaDB-client dump fails to restore into MySQL (ERROR 3105)
+        if: matrix.arch == 'amd64'
+        run: tests/integration/mariadb-client-regression.sh
+
+  nfs:
+    name: real NFS (amd64)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with: { persist-credentials: false }
+      - run: docker build --build-arg VERSION=0.0.0-ci -t mysql-backup:ci .
+      - name: loopback NFS server, hard mount, real outage
+        run: sudo --preserve-env=CI env MBTEST_ALLOW_HOST_NFS=1 IMAGE=mysql-backup:ci tests/integration/nfs.sh
+        timeout-minutes: 20

@@ -1,0 +1,6 @@
+.env
+secrets/
+deploy/.env
+deploy/secrets/
+*.sql.gz
+*.partial

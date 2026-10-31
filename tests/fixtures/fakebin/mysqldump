@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Test double for mysqldump (unit tests only; never on PATH in the image).
+[[ ${1:-} == --version ]] && { echo "mysqldump  Ver 8.0.37 for Linux on x86_64 (fake)"; exit 0; }
+[[ -n ${FAKE_ARGV_LOG:-} ]] && printf '%s\n' "$*" >>"$FAKE_ARGV_LOG"
+printf -- '-- MySQL dump 10.13  Distrib 8.0.37, for Linux (x86_64)\n--\n-- Host: fake    Database: fake\n-- Server version\t8.0.37\n'
+case ${FAKE_DUMP_MODE:-ok} in
+	slow) [[ -n ${FAKE_PID_FILE:-} ]] && echo $$ >"$FAKE_PID_FILE"; sleep "${FAKE_DUMP_SLEEP:-30}" ;;
+	fail) echo "mysqldump: Got error: 2013: Lost connection to MySQL server during query" >&2; exit 2 ;;
+	notrailer) echo "CREATE TABLE t (id int);"; exit 0 ;;
+esac
+head -c "${FAKE_DUMP_BYTES:-4096}" /dev/urandom | base64 -w 76 | sed 's/^/-- /'
+printf -- '-- Dump completed on 2026-01-01 00:00:00\n'
