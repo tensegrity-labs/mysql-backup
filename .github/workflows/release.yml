@@ -10,6 +10,10 @@ name: release
 on:
   push:
     tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  # Manual release from the default branch (repository writers only): the
+  # version comes from runtime/VERSION and the tag is created by the publish
+  # job only after every test passed.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -34,9 +38,18 @@ jobs:
         name: validate tag, VERSION file and branch
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#v}"
-          [[ "$(cat runtime/VERSION)" == "$version" ]] || { echo "runtime/VERSION != tag"; exit 1; }
           default="${{ github.event.repository.default_branch }}"
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            [[ "$GITHUB_REF" == "refs/heads/$default" ]] || { echo "dispatch only from $default"; exit 1; }
+            version="$(cat runtime/VERSION)"
+            if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+              echo "tag v$version already exists"; exit 1
+            fi
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "bad version $version"; exit 1; }
+          [[ "$(cat runtime/VERSION)" == "$version" ]] || { echo "runtime/VERSION != tag"; exit 1; }
           git merge-base --is-ancestor "$GITHUB_SHA" "origin/$default" || { echo "tag is not on $default"; exit 1; }
           mysql=$(sed -n 's/^ARG MYSQL_CLIENT_VERSION=//p' Dockerfile)
           echo "version=$version" >>"$GITHUB_OUTPUT"
@@ -73,7 +86,7 @@ jobs:
           build-args: |
             VERSION=${{ needs.prepare.outputs.version }}
             REVISION=${{ github.sha }}
-            CREATED=${{ github.event.head_commit.timestamp }}
+            CREATED=${{ github.event.head_commit.timestamp || github.event.repository.pushed_at }}
           labels: |
             org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -185,4 +198,9 @@ jobs:
           MySQL client: Oracle mysqldump ${{ needs.prepare.outputs.mysql }} (see docs/compatibility.md).
           Pin by digest in production; see docs/upgrade.md. Changes: see CHANGELOG.md.
           NOTES
-          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
+            # creates tag v$v on the tested commit
+            gh release create "v$v" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "v$v" --notes-file notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag
+          fi

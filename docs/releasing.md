@@ -10,6 +10,11 @@ git commit -am "Release 0.1.1" && git push
 git tag -a v0.1.1 -m "v0.1.1" && git push origin v0.1.1
 ```
 
+Alternatively, run the **release** workflow manually (Actions → release →
+Run workflow) on the default branch. It takes the version from
+`runtime/VERSION`, refuses if that tag already exists, and creates the tag
+together with the GitHub release only after the tests pass.
+
 `.github/workflows/release.yml` then runs these jobs:
 
 1. **prepare**: checks that the tag matches `runtime/VERSION`, that the
