@@ -33,7 +33,8 @@ fi
 systemctl start nfs-server
 mkdir -p "$EXPORT" "$MNT" "$STG"
 chown 999:999 "$EXPORT" "$STG"
-exportfs -o rw,sync,no_subtree_check "127.0.0.1:$EXPORT"
+# no_root_squash only so the test (root) can write the marker; the worker writes as uid 999
+exportfs -o rw,sync,no_subtree_check,no_root_squash "127.0.0.1:$EXPORT"
 echo "staging" >"$STG/.mysql-backup-staging"
 
 step "database and producer"

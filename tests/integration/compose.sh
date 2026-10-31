@@ -30,7 +30,12 @@ printf 'compose-test-only\n' >"$WORK/project/secrets/mysql_password"
 chmod 644 "$WORK/project/secrets/mysql_password"
 echo "staging" >"$WORK/staging/.mysql-backup-staging"
 echo "itest-destination" >"$WORK/nfs/.mysql-backup-destination"
-chown -R 999:999 "$WORK/staging" "$WORK/nfs"
+# Run the containers as a uid that owns the directories (BACKUP_UID/GID).
+if [[ $(id -u) == 0 ]]; then
+	chown -R 999:999 "$WORK/staging" "$WORK/nfs"; RUN_UID=999; RUN_GID=999
+else
+	RUN_UID=$(id -u); RUN_GID=$(id -g)
+fi
 
 sed -e "s|^COMPOSE_PROJECT_NAME=.*|COMPOSE_PROJECT_NAME=$RUN_ID|" \
 	-e "s|^MYSQL_BACKUP_IMAGE=.*|MYSQL_BACKUP_IMAGE=$IMAGE|" \
@@ -46,6 +51,7 @@ sed -e "s|^COMPOSE_PROJECT_NAME=.*|COMPOSE_PROJECT_NAME=$RUN_ID|" \
 	-e "s|^DELIVERY_EXPECT_SOURCE=.*|DELIVERY_EXPECT_SOURCE=|" \
 	-e "s|^DELIVERY_MARKER_ID=.*|DELIVERY_MARKER_ID=itest-destination|" \
 	-e "s|^DELIVERY_RETRY_INTERVAL=.*|DELIVERY_RETRY_INTERVAL=5s|" \
+	-e "s|^BACKUP_UID=.*|BACKUP_UID=$RUN_UID|" -e "s|^BACKUP_GID=.*|BACKUP_GID=$RUN_GID|" \
 	"$ROOT/deploy/.env.example" >"$WORK/project/.env"
 echo "DELIVERY_POLL_INTERVAL=3s" >>"$WORK/project/.env"
 # This sandbox's root mount may not be shared; propagation is a host concern.
