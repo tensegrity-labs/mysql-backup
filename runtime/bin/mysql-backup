@@ -144,7 +144,9 @@ cmd_deliver_loop() {
 		ensure_state_dirs
 		local now; now=$(now_epoch)
 		if [[ -n $pid ]]; then
-			if kill -0 "$pid" 2>/dev/null; then
+			# The pass runs in its own process group. Track the whole group: the
+			# leader may exit while a child is still blocked in NFS I/O.
+			if kill -0 -- "-$pid" 2>/dev/null; then
 				if ((now - started > DELIVERY_ATTEMPT_TIMEOUT)); then
 					if ((killed_at == 0)); then
 						log_error "delivery pass exceeded ${DELIVERY_ATTEMPT_TIMEOUT}s; terminating it"
@@ -184,10 +186,10 @@ cmd_deliver_loop() {
 		[[ -n $STATUS_TEXTFILE ]] && write_textfile
 		_isleep "$DELIVERY_POLL_INTERVAL"
 	done
-	if [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null; then
+	if [[ -n $pid ]] && kill -0 -- "-$pid" 2>/dev/null; then
 		log_info "stopping: waiting for the running delivery pass to stop"
 		kill -TERM -- "-$pid" 2>/dev/null
-		local i; for ((i = 0; i < 20; i++)); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+		local i; for ((i = 0; i < 20; i++)); do kill -0 -- "-$pid" 2>/dev/null || break; sleep 1; done
 	fi
 	log_info "delivery worker stopping"
 	exit 0

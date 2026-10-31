@@ -50,7 +50,7 @@ validate_fs() {
 			printf '%s marker %s does not contain the expected identifier\n' "$label" "$mf"; return 1
 		fi
 	fi
-	if [[ ! -w $dir ]]; then
+	if [[ ${MB_SKIP_WRITABLE_CHECK:-} != 1 && ! -w $dir ]]; then
 		printf '%s directory %s is not writable by uid %s\n' "$label" "$dir" "$(id -u)"; return 1
 	fi
 	return 0

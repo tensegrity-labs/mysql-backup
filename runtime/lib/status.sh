@@ -24,7 +24,8 @@ collect_status() {
 	fi
 
 	ST_STAGING_OK=true; ST_STAGING_MSG=""
-	if ! ST_STAGING_MSG=$(validate_staging); then
+	# status is read-only and may run with staging mounted read-only
+	if ! ST_STAGING_MSG=$(MB_SKIP_WRITABLE_CHECK=1 validate_staging); then
 		ST_STAGING_OK=false
 		_lvl 2 "staging: $ST_STAGING_MSG"
 	fi

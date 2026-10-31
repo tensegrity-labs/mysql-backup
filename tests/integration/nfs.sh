@@ -102,11 +102,19 @@ t1=$(date +%s)
 pass "3 local dumps completed in $((t1 - t0))s while the NFS server was down"
 [[ $(pending) -ge 3 ]] || die "expected at least 3 pending"
 # Let the worker attempt delivery, hit its deadline and report.
-sleep 45
+sleep 75   # deadline 20s + TERM, then KILL after 30s, then stall detection
 st=$(mb -e "BACKUP_NAMESPACE=$NS" -e DELIVERY_ENABLED=true -v "$STG:/staging:ro" -- status || true)
 echo "$st"
-n=$(docker exec "$RUN_ID-delivery" sh -c 'for p in /proc/[0-9]*; do tr "\0" " " <$p/cmdline 2>/dev/null; echo; done' | grep -c 'mysql-backup deliver $' || true)
-echo "delivery pass processes inside the worker: $n"
+# A pass is one process group (subshells share its command line), so count
+# distinct process groups of `mysql-backup deliver` processes.
+groups=$(docker exec "$RUN_ID-delivery" bash -c 'for p in /proc/[0-9]*; do
+	c=$(tr "\0" " " <$p/cmdline 2>/dev/null) || continue
+	[[ $c == *"mysql-backup deliver " ]] || continue
+	s=$(<$p/stat); s=${s##*) }; set -- $s; echo "$3 ${p#/proc/} $1"
+done' || true)
+echo "delivery processes (pgid pid state):"; echo "$groups"
+n=$(awk 'NF{print $1}' <<<"$groups" | sort -u | wc -l)
+echo "distinct delivery passes: $n"
 ((n <= 1)) || die "overlapping delivery passes: $n"
 docker logs "$RUN_ID-delivery" 2>&1 | tail -n 15
 docker logs "$RUN_ID-delivery" 2>&1 | grep -Eq 'exceeded|stalled|unavailable|failed' ||
