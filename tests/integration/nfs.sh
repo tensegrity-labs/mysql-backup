@@ -20,7 +20,7 @@ NS=itest-nfs
 nfs_cleanup() {
 	systemctl start nfs-server >/dev/null 2>&1 || true
 	umount -f -l "$MNT" >/dev/null 2>&1 || true
-	exportfs -u "127.0.0.1:$EXPORT" >/dev/null 2>&1 || true
+	rm -f "/etc/exports.d/$RUN_ID.exports"; exportfs -ra >/dev/null 2>&1 || true
 	rm -rf -- "$EXPORT"
 	cleanup
 }
@@ -33,8 +33,12 @@ fi
 systemctl start nfs-server
 mkdir -p "$EXPORT" "$MNT" "$STG"
 chown 999:999 "$EXPORT" "$STG"
-# no_root_squash only so the test (root) can write the marker; the worker writes as uid 999
-exportfs -o rw,sync,no_subtree_check,no_root_squash "127.0.0.1:$EXPORT"
+# Persistent export (survives `systemctl restart nfs-server`, which drops
+# ad-hoc exportfs entries). no_root_squash only so the test (root) can write
+# the marker; the worker writes as uid 999.
+mkdir -p /etc/exports.d
+echo "$EXPORT 127.0.0.1(rw,sync,no_subtree_check,no_root_squash)" >"/etc/exports.d/$RUN_ID.exports"
+exportfs -ra
 echo "staging" >"$STG/.mysql-backup-staging"
 
 step "database and producer"
@@ -119,6 +123,11 @@ echo "distinct delivery passes: $n"
 docker logs "$RUN_ID-delivery" 2>&1 | tail -n 15
 docker logs "$RUN_ID-delivery" 2>&1 | grep -Eq 'exceeded|stalled|unavailable|failed' ||
 	die "worker did not report the outage"
+if docker logs "$RUN_ID-delivery" 2>&1 | grep -q 'does not exit after SIGKILL'; then
+	echo "observed: a blocked pass survived SIGKILL (uninterruptible) and was reported as stalled"
+else
+	echo "observed: blocked passes were terminated at the deadline (NFS waits were killable on this kernel)"
+fi
 pass "status answered during the outage; at most one delivery pass; outage reported"
 
 step "NFS server restored: automatic recovery"

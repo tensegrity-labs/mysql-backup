@@ -156,6 +156,11 @@ do_deliver() {
 	log_info "delivery: ${#pending[@]} pending backup(s); checking destination"
 
 	if ! why=$(validate_destination); then
+		if ((_interrupted)); then
+			log_warn "delivery pass interrupted while checking the destination (unresponsive?)"
+			delivery_record interrupted "$EX_INTERRUPTED" "interrupted while checking the destination"
+			return "$EX_INTERRUPTED"
+		fi
 		log_error "destination unavailable: $why; ${#pending[@]} backup(s) remain queued locally"
 		delivery_record failed "$EX_UNAVAILABLE" "destination unavailable: $why"
 		return "$EX_UNAVAILABLE"
