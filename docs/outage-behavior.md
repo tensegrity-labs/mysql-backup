@@ -111,6 +111,12 @@ it.** This project does not pretend otherwise:
 - The producer runs in a different container that does not mount the
   destination, so its dumps are unaffected. This was tested with a real NFS
   server stopped under a hard mount; see [testing](testing.md).
+- Observed in the real-NFS CI test (Ubuntu 24.04 runner, NFSv4.2 hard mount,
+  server stopped): passes blocked in `D` state were ended at the deadline,
+  because modern kernels let *fatal* signals interrupt most NFS waits
+  (`TASK_KILLABLE`). A new pass started only after the previous one was gone,
+  and the 3 local dumps taken during the outage completed in about 4 s. The
+  `stalled` path covers operations or kernels where the wait is not killable.
 - When the server returns, the blocked I/O completes or fails. The pass then
   exits, the stall clears, and pending dumps are delivered.
 
