@@ -17,7 +17,7 @@ reaching NFS?) are reported separately.
 
 ```text
 $ docker compose exec backup mysql-backup status
-mysql-backup 0.1.0  namespace=myapp-prod  state=WARNING
+mysql-backup 0.2.0  namespace=myapp-prod  state=WARNING
   ! 5 backup(s) pending delivery, oldest 6h12m (limit 6h)
 local:
   latest backup      myapp-prod-20260715T170001Z.sql.gz (14m ago)
@@ -35,7 +35,7 @@ delivery:
 `status --json` returns one JSON object:
 
 ```json
-{"version":"0.1.0","namespace":"myapp-prod","state":"WARNING","time":1784134440,
+{"version":"0.2.0","namespace":"myapp-prod","state":"WARNING","time":1784134440,
  "enabled":true,"delivery_enabled":true,"problems":["..."],
  "local":{"latest_file":"...","latest_age_seconds":840,"count":29,"bytes":44023414784,
           "last_result":"ok","last_message":"dump completed","consecutive_failures":0,

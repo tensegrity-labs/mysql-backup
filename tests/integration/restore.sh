@@ -95,7 +95,7 @@ pass "tables, columns (incl. generated expressions), indexes, FKs, triggers, rou
 step "compare data"
 q_data() {
 	sql "$1" "$2" <<'SQL'
-SELECT 'widget', COUNT(*), SUM(is_active), MD5(GROUP_CONCAT(CONCAT_WS('|', id, sku, label, price, is_active, IFNULL(active_marker,'N'), label_upper, attrs, attr_color, HEX(blob_data), created_at) ORDER BY id SEPARATOR '\n')) FROM widget
+SELECT 'widget', COUNT(*), SUM(is_active), MD5(GROUP_CONCAT(CONCAT_WS('|', id, sku, label, price, is_active, IFNULL(sku_slot,'N'), label_upper, attrs, attr_color, HEX(blob_data), created_at) ORDER BY id SEPARATOR '\n')) FROM widget
 UNION ALL SELECT 'widget_event', COUNT(*), SUM(kind='archived'), MD5(GROUP_CONCAT(CONCAT_WS('|', id, widget_id, kind, at) ORDER BY id SEPARATOR '\n')) FROM widget_event
 UNION ALL SELECT 'audit_counter', COUNT(*), SUM(value), MD5(GROUP_CONCAT(CONCAT_WS('|', name, value) ORDER BY name)) FROM audit_counter
 UNION ALL SELECT 'active_widget', COUNT(*), NULL, MD5(GROUP_CONCAT(CONCAT_WS('|', id, sku, label, price, attr_color) ORDER BY id SEPARATOR '\n')) FROM active_widget;
@@ -114,16 +114,16 @@ step "exercise restored objects"
 out=$(sql recovery appdb_restore <<'SQL'
 SELECT price_with_tax(10, 0.0825);
 INSERT INTO widget (sku, label, price, attrs) VALUES ('SKU-NEW', 'restored ✓', 1, '{"color":"teal"}');
-SELECT active_marker, label_upper, attr_color FROM widget WHERE sku='SKU-NEW';
+SELECT sku_slot, label_upper, attr_color FROM widget WHERE sku='SKU-NEW';
 SELECT COUNT(*) FROM widget_event WHERE widget_id = LAST_INSERT_ID() AND kind='created';
 CALL archive_sku('SKU-NEW');
-SELECT is_active, IFNULL(active_marker,'NULL') FROM widget WHERE sku='SKU-NEW';
+SELECT is_active, IFNULL(sku_slot,'NULL') FROM widget WHERE sku='SKU-NEW';
 SQL
 )
 echo "$out"
 expected=$'10.8250\n1\tRESTORED ✓\tteal\n1\n0\tNULL'
 [[ $out == "$expected" ]] || die "restored objects did not behave as expected"
-# unique (sku, active_marker): a second active row for an active SKU must fail
+# unique (sku, sku_slot): a second active row for an active SKU must fail
 if echo "INSERT INTO widget (sku,label) VALUES ('SKU-00001','dup');" | sql recovery appdb_restore 2>/dev/null; then
 	die "unique key on stored generated column not enforced after restore"
 fi

@@ -4,10 +4,10 @@
 
 | Tag | Moves? | Use |
 |---|---|---|
-| `0.1.0` | never | Normal pinning |
-| `0.1.0-mysql8.0.37` | never | Same image; client version visible in the tag |
+| `0.2.0` | never | Normal pinning |
+| `0.2.0-mysql8.0.37` | never | Same image; client version visible in the tag |
 | `@sha256:<digest>` | never | **Production pinning**: immune to registry-side changes |
-| `0.1` | yes, to the newest `0.1.z` | Patch updates |
+| `0.2` | yes, to the newest `0.2.z` | Patch updates |
 | `latest` | yes | Experiments only |
 
 A versioned tag is never moved to different content. The release workflow
@@ -16,20 +16,20 @@ refuses to publish if the tag already exists.
 Find a release's digest on its GitHub release page, or with:
 
 ```bash
-docker buildx imagetools inspect ghcr.io/tensegrity-labs/mysql-backup:0.1.0
+docker buildx imagetools inspect ghcr.io/tensegrity-labs/mysql-backup:0.2.0
 ```
 
 Then pin both the tag and the digest:
 
 ```text
-MYSQL_BACKUP_IMAGE=ghcr.io/tensegrity-labs/mysql-backup:0.1.0@sha256:<digest>
+MYSQL_BACKUP_IMAGE=ghcr.io/tensegrity-labs/mysql-backup:0.2.0@sha256:<digest>
 ```
 
 ## Verifying provenance
 
 ```bash
-gh attestation verify oci://ghcr.io/tensegrity-labs/mysql-backup:0.1.0 --owner tensegrity-labs
-docker buildx imagetools inspect ghcr.io/tensegrity-labs/mysql-backup:0.1.0 --format '{{json .SBOM}}'
+gh attestation verify oci://ghcr.io/tensegrity-labs/mysql-backup:0.2.0 --owner tensegrity-labs
+docker buildx imagetools inspect ghcr.io/tensegrity-labs/mysql-backup:0.2.0 --format '{{json .SBOM}}'
 ```
 
 ## Procedure

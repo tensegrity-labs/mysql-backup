@@ -1,6 +1,6 @@
 # Compatibility
 
-The project's release version (`0.1.0`, semantic versioning) is independent of
+The project's release version (`0.2.0`, semantic versioning) is independent of
 the MySQL client version inside the image (`8.0.37`). Every release states
 both. The image tag `X.Y.Z-mysqlA.B.C` makes the client version explicit.
 
@@ -8,7 +8,8 @@ both. The image tag `X.Y.Z-mysqlA.B.C` makes the client version explicit.
 
 | mysql-backup | mysqldump client | Server | Result | Platforms tested |
 |---|---|---|---|---|
-| 0.1.0 | Oracle 8.0.37 (official image `mysql:8.0.37@sha256:598bf8b7…6b8a2b6d0a`) | MySQL 8.0.37 | dump + full restore + object/data comparison pass | linux/amd64, linux/arm64 |
+| 0.2.0 | Oracle 8.0.37 binaries copied from `mysql:8.0.37@sha256:598bf8b7…6b8a2b6d0a` onto `oraclelinux:9-slim` | MySQL 8.0.37 | dump + full restore + object/data comparison pass | linux/amd64, linux/arm64 |
+| 0.1.0 | Oracle 8.0.37 (full official image as base) | MySQL 8.0.37 | same tests pass | linux/amd64, linux/arm64 |
 
 "Tested" means CI ran `tests/integration/restore.sh` on that platform against
 that server. That test dumps a schema with stored and virtual generated
@@ -27,8 +28,8 @@ Not tested, and therefore **not supported** in this release:
 
 ## Platform support
 
-The official `mysql:8.0.37` image index provides `linux/amd64` and
-`linux/arm64/v8`. Both were checked with `docker buildx imagetools inspect`.
+The official `mysql:8.0.37` and `oraclelinux:9-slim` image indexes both
+provide `linux/amd64` and `linux/arm64/v8`. Both were checked with `docker buildx imagetools inspect`.
 Releases are built for both, and **each architecture is tested on native
 runners before tagging**. Other architectures are not published.
 

@@ -9,10 +9,8 @@ apply to those components, and nothing here changes their terms.
 
 | Component | Where it comes from | License |
 |---|---|---|
-| MySQL Community Server 8.0.37 client programs (`mysqldump`, `mysql`), plus the server binaries present in the base image | Official Docker image `docker.io/library/mysql:8.0.37`, pinned by digest in the [Dockerfile](Dockerfile) | GPL-2.0 with the Universal FOSS Exception, v1.0. The license text ships in the image at `/usr/share/doc/mysql-community-server-minimal/LICENSE` and is left in place. |
-| MySQL Shell 8.0.37 (present in the base image, not used) | Same base image | GPL-2.0 with the Universal FOSS Exception, v1.0 |
-| Oracle Linux 9 userland (bash, coreutils, gzip, gawk, util-linux-core, OpenSSL, glibc and others) | Base image layers, plus packages from the Oracle Linux 9 repositories added at build time | Various open-source licenses (GPL, LGPL, BSD, MIT, Apache and others), listed per package under `/usr/share/licenses/` in the image |
-| Docker official image packaging for `mysql` | <https://github.com/docker-library/mysql> | MIT (packaging only) |
+| MySQL Community 8.0.37 client programs `mysqldump` and `mysql` (unmodified binaries) | Copied from the official Docker image `docker.io/library/mysql:8.0.37`, pinned by digest in the [Dockerfile](Dockerfile) | GPL-2.0 with the Universal FOSS Exception, v1.0. The upstream `LICENSE` and `README` ship in the image at `/usr/share/licenses/mysql-community-client/`. |
+| Oracle Linux 9 slim userland (bash, coreutils, gzip, gawk, findutils, tzdata, util-linux-core, OpenSSL, libstdc++, zlib, ncurses, glibc and others) | Base image `docker.io/library/oraclelinux:9-slim` pinned by digest, plus packages from the Oracle Linux 9 repositories added at build time | Various open-source licenses (GPL, LGPL, BSD, MIT, Apache and others), listed per package under `/usr/share/licenses/` in the image |
 
 ## Source availability
 

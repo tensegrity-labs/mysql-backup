@@ -27,7 +27,7 @@ Before every dump the producer works through these steps:
    like:
 
    ```text
-   insufficient staging capacity: 1.2GiB available, need 1.5GiB estimated dump
+   insufficient staging capacity: 1.0GiB available, need 1.8GiB estimated dump
    + 2.0GiB reserve; 37 undelivered backups (48.1GiB) are preserved - restore
    delivery, free space, or enlarge staging
    ```
@@ -47,10 +47,10 @@ tolerated outage ≈ (staging size − reserve − LOCAL_KEEP_DELIVERED history)
 ```
 
 For example, with a 100 GiB staging filesystem, a 5 GiB reserve, 16 dumps a
-day and a 1.5 GiB compressed dump:
+day and a 1.2 GiB compressed dump:
 
 ```text
-(100 − 5) GiB ÷ (1.5 GiB × 16/day) ≈ 3.9 days
+(100 − 5) GiB ÷ (1.2 GiB × 16/day) ≈ 4.9 days
 ```
 
 Once delivery stops, the delivered history is reclaimed automatically, so it

@@ -98,8 +98,9 @@ DELIVERY_MARKER_ID=nfs-backups-1
 
 ## Sizing staging
 
-The numbers below are an **unverified example**, based on a reported
-compressed dump size of 1–2 GB. Measure your own size before sizing a disk.
+The worked example uses a 1.2 GiB compressed dump: a mid-sized
+application database. Your size will differ, so measure it before sizing a
+disk.
 
 Measure the compressed size of a real dump:
 
@@ -113,8 +114,9 @@ docker compose logs backup | grep 'dump completed' | tail -n 5
 Without the tool, estimate it with a one-off pipe that writes nothing to disk:
 
 ```bash
-docker run --rm --network myapp_default -v "$PWD/secrets/mysql_password:/pw:ro" mysql:8.0.37 \
-  sh -c 'mysqldump -h db -u backup -p"$(cat /pw)" --single-transaction --routines --triggers --events --hex-blob --no-tablespaces myapp | gzip -6 | wc -c'
+docker run --rm --network myapp_default -v "$PWD/secrets/mysql_password:/pw:ro" \
+  --entrypoint sh ghcr.io/tensegrity-labs/mysql-backup:0.2.0 \
+  -c 'mysqldump -h db -u backup -p"$(cat /pw)" --single-transaction --routines --triggers --events --hex-blob --no-tablespaces myapp | gzip -6 | wc -c'
 ```
 
 (This one-off command puts the password on a command line inside a throwaway
@@ -122,7 +124,7 @@ container. Use it only for measurement.) `ops/staging-size.sh` performs the
 calculation below.
 
 ```text
-S  = compressed dump size (measured; example: 1.5 GiB)
+S  = compressed dump size (measured; example: 1.2 GiB)
 N  = dumps per day (0 6-21 * * * → 16)
 H  = local delivered history (LOCAL_KEEP_DELIVERED=24h → about one day of dumps)
 O  = outage you want to survive without losing new recovery points (example: 3 days)
@@ -130,11 +132,11 @@ R  = reserve (STAGING_RESERVE / STAGING_RESERVE_PERCENT)
 G  = growth headroom for the next dump (S × DUMP_SIZE_GROWTH_PERCENT/100)
 
 staging ≥ S × N × O  +  G  +  R
-example:  1.5 × 16 × 3  +  2.25  +  5   ≈ 80 GiB
+example:  1.2 × 16 × 3  +  1.8  +  5   ≈ 65 GiB
 ```
 
 During normal operation, staging holds about H's worth of dumps
-(1.5 × 16 ≈ 24 GiB in the example). The rest is the outage buffer. When the
+(1.2 × 16 ≈ 19 GiB in the example). The rest is the outage buffer. When the
 outage exceeds the buffer, new dumps fail and existing ones are kept. Dump
 sizes grow with the database, so check them periodically.
 

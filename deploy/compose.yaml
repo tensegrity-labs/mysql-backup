@@ -13,16 +13,13 @@
 name: ${COMPOSE_PROJECT_NAME:-mysql-backup}
 
 x-common: &common
-  image: ${MYSQL_BACKUP_IMAGE:-ghcr.io/tensegrity-labs/mysql-backup:0.1.0}
+  image: ${MYSQL_BACKUP_IMAGE:-ghcr.io/tensegrity-labs/mysql-backup:0.2.0}
   restart: unless-stopped
   init: true                      # forwards stop signals; reaps children
   user: "${BACKUP_UID:-999}:${BACKUP_GID:-999}"
   read_only: true
   tmpfs:
     - /tmp:size=16m,mode=1777     # private option file + heartbeat, never on disk
-    # The base image declares VOLUME /var/lib/mysql; mysqld never runs here, so
-    # a tiny tmpfs stops Docker from creating an anonymous volume per container.
-    - /var/lib/mysql:size=1m,mode=0700
   cap_drop: [ALL]
   security_opt: ["no-new-privileges:true"]
   stop_grace_period: 60s

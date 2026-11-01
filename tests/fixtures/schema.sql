@@ -14,13 +14,13 @@ CREATE TABLE widget (
   price         DECIMAL(12,4) NOT NULL DEFAULT 0,
   is_active     TINYINT(1) NOT NULL DEFAULT 1,
   -- one active row per SKU: NULL for inactive rows does not collide
-  active_marker TINYINT AS (IF(is_active = 1, 1, NULL)) STORED,
+  sku_slot      TINYINT AS (IF(is_active = 1, 1, NULL)) STORED,
   label_upper   VARCHAR(200) AS (UPPER(label)) VIRTUAL,
   attrs         JSON NULL,
   attr_color    VARCHAR(20) AS (JSON_UNQUOTE(JSON_EXTRACT(attrs, '$.color'))) STORED,
   blob_data     BLOB NULL,
   created_at    DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
-  UNIQUE KEY uq_widget_active (sku, active_marker),
+  UNIQUE KEY uq_widget_active (sku, sku_slot),
   KEY ix_color (attr_color)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Staging size calculator. All inputs are your own measurements/choices.
 # Usage: staging-size.sh <dump-size-GiB> <dumps-per-day> <outage-days> [reserve-GiB] [growth-percent]
-# Example: staging-size.sh 1.5 16 3 5 150
+# Example: staging-size.sh 1.2 16 3 5 150
 set -euo pipefail
 S=${1:?compressed dump size in GiB}; N=${2:?dumps per day}; O=${3:?outage days to tolerate}
 R=${4:-5}; G=${5:-150}

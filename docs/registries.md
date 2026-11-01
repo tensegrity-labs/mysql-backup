@@ -44,7 +44,7 @@ serve byte-identical images.
    release, copy its digest by hand:
 
    ```bash
-   docker buildx imagetools create -t docker.io/tensegritylabs/mysql-backup:0.1.0 \
+   docker buildx imagetools create -t docker.io/tensegritylabs/mysql-backup:0.2.0 \
      ghcr.io/tensegrity-labs/mysql-backup@sha256:<digest-from-the-release-page>
    ```
 
@@ -59,5 +59,5 @@ public. After the first release, an organisation owner checks:
 3. Anonymous pull works:
 
    ```bash
-   docker logout ghcr.io; docker pull ghcr.io/tensegrity-labs/mysql-backup:0.1.0
+   docker logout ghcr.io; docker pull ghcr.io/tensegrity-labs/mysql-backup:0.2.0
    ```

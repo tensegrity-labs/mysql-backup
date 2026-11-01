@@ -3,6 +3,16 @@
 All notable changes are listed here. Versions follow semantic versioning and
 are independent of the bundled MySQL client version.
 
+## 0.2.0 - 2026-11-01
+
+- Slim client-only image: Oracle `mysqldump`/`mysql` 8.0.37 binaries copied
+  from the pinned official `mysql:8.0.37` image onto `oraclelinux:9-slim`.
+  The image shrinks from about 1.03 GB to about 210 MB unpacked, and has no
+  MySQL server, MySQL Shell, server plugins or `VOLUME /var/lib/mysql`.
+  Runtime user, paths, configuration and on-disk format are unchanged.
+- Reference Compose files no longer need the `/var/lib/mysql` tmpfs.
+- Docs: staging sizing examples use a 1.2 GiB compressed dump.
+
 ## 0.1.0 - 2026-10-31
 
 First release.

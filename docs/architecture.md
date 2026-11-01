@@ -190,7 +190,23 @@ pass from starting next to it.
 ## Why bash
 
 The runtime is about 1,700 lines of bash (including comments) plus `gawk`, `coreutils` and
-`util-linux`. All of these are already in the Oracle Linux base of the
-official MySQL image, plus `util-linux-core`. This avoids a second language
-runtime in the image. The behaviour is covered by the tests described in
+`util-linux-core` from Oracle Linux 9. This avoids a second language runtime
+in the image.
+
+## Image contents
+
+The image is client-only, about 210 MB unpacked:
+
+- Oracle Linux 9 slim (the distribution the official MySQL image is built
+  on), with OS security updates applied at build time.
+- `mysqldump` and `mysql` 8.0.37, copied from the official `mysql:8.0.37`
+  image pinned by digest. They link only against system libraries (OpenSSL 3,
+  libstdc++, zlib, ncurses).
+- The scripts under `/opt/mysql-backup`.
+
+There is no MySQL server, MySQL Shell or server plugin, and no `VOLUME`
+declaration. Client authentication plugins that are loaded from files
+(LDAP SASL, Kerberos, FIDO, OCI) are not included. The built-in
+`caching_sha2_password` and `mysql_native_password` methods are, and they are
+what the tests use. The behaviour is covered by the tests described in
 [testing](testing.md).

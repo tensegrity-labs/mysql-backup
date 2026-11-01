@@ -4,7 +4,8 @@ Scheduled **Oracle MySQL logical dumps** for Docker Compose deployments.
 Dumps are written to local staging first. An optional, separate worker then
 copies them to an NFS share, verifies each copy, and publishes it.
 
-- Uses Oracle's own `mysqldump` (**8.0.37**) from the official `mysql` image.
+- Uses Oracle's own `mysqldump` (**8.0.37**), taken from the official `mysql`
+  image and packaged in a slim client-only image (about 210 MB, no MySQL server).
   It does not use the MariaDB dump client, which produces dumps that MySQL
   rejects for some generated columns (`ERROR 3105`).
 - One database per producer. Output is a gzip-compressed SQL file that you can
@@ -65,20 +66,20 @@ features, so it can also be deployed as a stack in Arcane or Portainer.
 
 | Image tag | MySQL client | Tested against servers | Platforms |
 |---|---|---|---|
-| `0.1.0` | Oracle `mysqldump` 8.0.37 | MySQL 8.0.37 | linux/amd64, linux/arm64 |
+| `0.2.0` | Oracle `mysqldump` 8.0.37 | MySQL 8.0.37 | linux/amd64, linux/arm64 |
 
 Other MySQL 8.0.x servers are expected to work but are **not tested**. The
 producer warns about any server outside 8.0.x; set
 `MYSQL_VERSION_CHECK=strict` to refuse instead. MySQL 8.0 reached end of life
 in April 2026. See [compatibility](docs/compatibility.md) for the support
-matrix and the upgrade path. The project's version (`0.1.0`) is independent of
+matrix and the upgrade path. The project's version (`0.2.0`) is independent of
 the MySQL client version (`8.0.37`).
 
 ## Images
 
 ```text
-ghcr.io/tensegrity-labs/mysql-backup:0.1.0                 # immutable release
-ghcr.io/tensegrity-labs/mysql-backup:0.1.0-mysql8.0.37     # same image, client version explicit
+ghcr.io/tensegrity-labs/mysql-backup:0.2.0                 # immutable release
+ghcr.io/tensegrity-labs/mysql-backup:0.2.0-mysql8.0.37     # same image, client version explicit
 ghcr.io/tensegrity-labs/mysql-backup@sha256:<digest>       # pin this in production
 ```
 
